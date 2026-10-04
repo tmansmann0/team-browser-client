@@ -59,8 +59,11 @@ class DesktopGateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
+        # macOS exposes its temporary directory through the system /var symlink.
+        # Canonicalize only this owned test fixture; production rejects symlinks.
+        self.root = Path(self.temp.name).resolve(strict=True)
         self.app = mount_desktop_ownership(
-            mount_workspace(create_local_app(Path(self.temp.name) / "workspace"), desktop=True)
+            mount_workspace(create_local_app(self.root / "workspace"), desktop=True)
         )
         self.client = self.enterContext(
             TestClient(
@@ -220,7 +223,7 @@ class DesktopGateTests(unittest.TestCase):
             registry.release(profile_id)
 
     def test_plain_cli_mount_does_not_claim_desktop(self):
-        app = mount_workspace(create_local_app(Path(self.temp.name) / "other"))
+        app = mount_workspace(create_local_app(self.root / "other"))
         with TestClient(
             app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 12000)
         ) as client:
