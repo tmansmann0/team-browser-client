@@ -25,7 +25,7 @@ async function main() {
   cpSync(join(desktop, 'src'), join(stage, 'src'), { recursive: true });
   const packageInfo = JSON.parse(readFileSync(join(desktop, 'package.json')));
   writeFileSync(join(stage, 'package.json'), JSON.stringify({ name: packageInfo.name, version: packageInfo.version, private: true, main: packageInfo.main, license: 'UNLICENSED' }, null, 2));
-  const { default: packager } = await import('@electron/packager');
+  const { packager } = await import('@electron/packager');
   const { flipFuses, FuseVersion, FuseV1Options } = await import('@electron/fuses');
   const paths = await packager({
     dir: stage, out: join(desktop, 'out/packages'), name: 'TeamBrowser', executableName: 'TeamBrowser',

@@ -55,6 +55,7 @@ test('packaged hook retains controls and workflow only uploads bounded evidence'
   const workflow = fs.readFileSync(path.join(root, '.github/workflows/desktop-candidate.yml'), 'utf8');
   assert.match(main, /app\.enableSandbox\(\)/);
   assert.match(main, /if \(smoke\) await nativeSmoke\.run/);
+  assert.match(packageSource, /const \{ packager \} = await import\('@electron\/packager'\)/);
   assert.match(packageSource, /resetAdHocDarwinSignature: mode === 'unsigned-candidate'/);
   assert.match(packageSource, /native_acceptance: false, install_ready: false/);
   assert.match(workflow, /node desktop\/scripts\/smoke-packaged-mac\.cjs/);
