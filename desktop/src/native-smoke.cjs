@@ -86,6 +86,51 @@ function verifyStorage(value, expected, live = null) {
   assert.equal(value.live, live, 'Live document was recreated or crossed profiles');
   for (const key of ['node', 'require', 'bridge']) assert.equal(value[key], 'undefined', 'Guest exposed privileged capability');
 }
+// Electron v44.5.1 SaveLastPreferences serializes these booleans explicitly.
+// devTools and preload are omitted from that snapshot; absence is not false.
+// See shell/browser/web_contents_preferences.cc and api/electron_api_web_contents.cc.
+const EXPECTED_PREFERENCES = Object.freeze({
+  sandbox: true, contextIsolation: true, nodeIntegration: false,
+  nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false,
+  webviewTag: false, webSecurity: true, allowRunningInsecureContent: false,
+});
+function preferenceEvidence(preferences) {
+  return Object.fromEntries(Object.keys(EXPECTED_PREFERENCES).map(key => [key,
+    typeof preferences[key] === 'boolean' ? preferences[key] :
+      preferences[key] === undefined ? 'missing' : 'unexpected_non_boolean']));
+}
+function verifyPreferences(evidence) {
+  for (const [key, expected] of Object.entries(EXPECTED_PREFERENCES)) {
+    assert.equal(evidence[key], expected, `Native guest preference ${key} must be ${expected}`);
+  }
+}
+async function probeDevToolsDisabled(wc) {
+  let opened = false;
+  const observed = () => { opened = true; };
+  wc.on('devtools-opened', observed);
+  try {
+    // This exercises the normal disabled control without changing any preference.
+    // Pinned Electron returns immediately before creating DevTools when disabled.
+    wc.openDevTools({ mode: 'detach', activate: false });
+    await wait(150);
+    const evidence = { opened_event: opened, is_open: wc.isDevToolsOpened(), contents_created: Boolean(wc.devToolsWebContents) };
+    return evidence;
+  } finally { wc.removeListener('devtools-opened', observed); }
+}
+function verifyDevToolsDisabled(evidence) {
+  assert.deepEqual(evidence, { opened_event: false, is_open: false, contents_created: false }, 'Native guest allowed DevTools to open');
+}
+const GUEST_PRIVILEGES = `({ process: typeof process, require: typeof require,
+  Buffer: typeof Buffer, ipcRenderer: typeof ipcRenderer, TeamDesktop: typeof TeamDesktop })`;
+function verifyGuestPrivileges(evidence) {
+  for (const key of ['process', 'require', 'Buffer', 'ipcRenderer', 'TeamDesktop']) {
+    assert.equal(evidence[key], 'undefined', `Native guest exposed privileged global ${key}`);
+  }
+}
+const CHROME_READY = `Boolean(document.readyState === 'complete' && window.TeamDesktop &&
+  document.querySelector('.profile-manager') && document.querySelector('#new-profile') &&
+  !document.querySelector('#new-profile').disabled &&
+  !document.querySelector('#workspace-status .workspace-alert.error') && !document.querySelector('dialog[open]'))`;
 async function capture(contents, target) {
   const image = await contents.capturePage();
   assert.equal(image.isEmpty(), false, 'Native capture was empty; rendering not established');
@@ -113,9 +158,9 @@ async function run({ smoke, app, window, engine, sidecar }) {
     check('packaged_app_and_frozen_sidecar_started');
     await until(() => window.isVisible(), 'Packaged app window was not shown');
     const chrome = expression => window.webContents.executeJavaScript(expression);
-    await until(() => chrome("Boolean(window.TeamDesktop && document.querySelector('#workspace-root, #workspace-content, main'))"), 'Bundled chrome/IPC preload did not render');
+    await until(() => chrome(CHROME_READY), 'Bundled workspace did not settle into its usable profile manager');
     report.chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-chrome.png`));
-    check('real_browser_window_and_bundled_chrome_rendered');
+    check('real_browser_window_and_settled_profile_manager_rendered');
     const api = (method, url, body) => chrome(`(async () => { const config = await (await fetch('/local/config')).json(); const response = await fetch(${JSON.stringify(url)}, {method:${JSON.stringify(method)}, headers:{'Content-Type':'application/json','X-Local-CSRF':config.csrf_token}, ${body === undefined ? '' : 'body:' + JSON.stringify(JSON.stringify(body))}}); if(!response.ok) throw new Error('Smoke workspace API failed'); return response.json(); })()`);
     let profiles = await api('GET', '/local/v1/profiles');
     if (smoke.phase === 'seed') {
@@ -126,6 +171,13 @@ async function run({ smoke, app, window, engine, sidecar }) {
     assert.equal(profiles.length, 2, 'Expected exactly two synthetic profiles');
     for (const label of ['A', 'B']) assert.equal(profiles.filter(item => item.name === `Native smoke ${label}`).length, 1);
     if (smoke.phase === 'reopen') { assert.ok(profiles.every(item => item.state === 'stopped'), 'Prior shutdown did not release profile leases'); check('metadata_persisted_and_previous_leases_released'); }
+    // Reload the ordinary bundled UI after fixture creation so its own fetch/render
+    // path displays the two durable profiles before any native tabs are opened.
+    await window.webContents.loadURL(window.webContents.getURL());
+    await until(() => chrome(CHROME_READY + " && document.querySelectorAll('[data-select]').length === 2"), 'Bundled workspace did not render both synthetic profiles');
+    report.profiles_chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-profiles-chrome.png`));
+    check('bundled_profile_manager_displays_both_durable_synthetic_profiles');
+    report.guest_security = {};
     const command = value => chrome(`window.TeamDesktop.command(${JSON.stringify(value)})`);
     const views = new Map(), sessions = new Set();
     for (const label of ['A', 'B']) {
@@ -142,12 +194,17 @@ async function run({ smoke, app, window, engine, sidecar }) {
       const tab = engine.tabs.get(engine.snapshot().active_tab_id);
       assert.ok(tab && window.contentView.children.includes(tab.view), 'Guest is not a native child view');
       const wc = tab.view.webContents;
-      const preferences = wc.getLastWebPreferences();
-      assert.equal(preferences.sandbox, true); assert.equal(preferences.contextIsolation, true);
-      assert.equal(preferences.nodeIntegration, false); assert.equal(preferences.webSecurity, true);
-      assert.equal(preferences.devTools, false); assert.ok(!preferences.preload, 'Guest unexpectedly has a preload');
+      const security = { preferences: preferenceEvidence(wc.getLastWebPreferences()),
+        snapshot_omissions: ['devTools', 'preload'] };
+      report.guest_security[label] = security; save();
+      verifyPreferences(security.preferences);
       await until(() => !wc.isLoading() && wc.getURL() === ORIGIN + '/', 'Native fixture navigation did not finish');
       await until(() => wc.executeJavaScript("Boolean(document.getElementById('value'))"), 'Native fixture DOM did not render');
+      security.privileged_globals = await wc.executeJavaScript(GUEST_PRIVILEGES); save();
+      verifyGuestPrivileges(security.privileged_globals);
+      security.devtools_probe = await probeDevToolsDisabled(wc); save();
+      verifyDevToolsDisabled(security.devtools_probe);
+      check(`native_guest_${label}_strict_preferences_and_privilege_probes_passed`);
       verifyStorage(await wc.executeJavaScript(READ_STORAGE), smoke.phase === 'seed' ? null : label);
       await wc.executeJavaScript(writeStorage(label));
       verifyStorage(await wc.executeJavaScript(READ_STORAGE), label, label + '-live');
@@ -197,4 +254,4 @@ function startupFailure(smoke, message) {
     native_acceptance: false, install_ready: false, checks: [], failure: message,
   }, null, 2) + '\n');
 }
-module.exports = { config, configure, run, fixture, verifyStorage, ORIGIN, startupFailure };
+module.exports = { config, configure, run, fixture, verifyStorage, ORIGIN, startupFailure, preferenceEvidence, verifyPreferences, probeDevToolsDisabled, verifyDevToolsDisabled, verifyGuestPrivileges, CHROME_READY };

@@ -40,7 +40,7 @@ async function launch(executable, root, phase) {
   fs.writeFileSync(path.join(evidence, `${phase}-process.log`), Buffer.concat(chunks));
   // Copy only explicit reports and captures. Never upload profile databases,
   // browser/keychain data, child pipes, or the temporary HOME directory.
-  for (const suffix of ['.json', '-chrome.png', '-profile-A.png', '-profile-B.png']) {
+  for (const suffix of ['.json', '-chrome.png', '-profiles-chrome.png', '-profile-A.png', '-profile-B.png']) {
     const source = path.join(root, 'evidence', phase + suffix);
     if (fs.existsSync(source)) fs.copyFileSync(source, path.join(evidence, phase + suffix));
   }
@@ -59,6 +59,12 @@ async function launch(executable, root, phase) {
   assert.equal(report.status, 'passed', `${phase}: ${report.failure || report.status}`);
   assert.equal(result.sidecar_process_gone, true, `${phase}: sidecar process survived app exit`);
   return { ...result, checks: report.checks };
+}
+function signatureDiagnostic(error, root) {
+  const raw = [error.stdout, error.stderr].filter(Boolean).map(value => String(value)).join('\n');
+  return { exit_status: Number.isInteger(error.status) ? error.status : null,
+    signal: typeof error.signal === 'string' ? error.signal.slice(0, 32) : null,
+    output: raw.split(root).join('[SMOKE_ROOT]').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').slice(0, 8192) };
 }
 async function main() {
   fs.mkdirSync(evidence, { recursive: true });
@@ -86,8 +92,8 @@ async function main() {
     result.executable_sha256 = digest(executable);
     result.asar_sha256 = digest(path.join(app, 'Contents/Resources/app.asar'));
     // Diagnostic only. Never reset signatures, remove quarantine or change policy.
-    try { execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], { stdio: 'pipe' }); result.existing_signature_valid = true; }
-    catch { result.existing_signature_valid = false; }
+    try { execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=4', app], { stdio: 'pipe', timeout: 20000, maxBuffer: 65536 }); result.existing_signature_valid = true; }
+    catch (error) { result.existing_signature_valid = false; result.signature_diagnostic = signatureDiagnostic(error, root); }
     result.seed = await launch(executable, root, 'seed');
     result.reopen = await launch(executable, root, 'reopen');
     assert.equal(digest(archive), candidate.archive_sha256, 'Archive mutated during test');
@@ -99,4 +105,4 @@ async function main() {
   console.log(JSON.stringify(result, null, 2));
 }
 if (require.main === module) void main();
-module.exports = { childEnvironment };
+module.exports = { childEnvironment, signatureDiagnostic };

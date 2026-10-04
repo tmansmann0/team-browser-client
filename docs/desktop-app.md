@@ -262,3 +262,26 @@ Primary API references: [session-scoped protocol handlers](https://www.electronj
 [native view visibility](https://www.electronjs.org/docs/latest/api/view),
 [WebContents captures](https://www.electronjs.org/docs/latest/api/web-contents), and
 [official fuse tooling's Apple Silicon requirement](https://github.com/electron/fuses#apple-silicon).
+
+### Electron 44 diagnostic details
+
+The native smoke checks the exact boolean security fields emitted by Electron
+44.5.1's `SaveLastPreferences` and fails by field name if any is missing or wrong.
+It does not reinterpret an omitted field as false. That Electron implementation
+omits `devTools` and `preload` from `getLastWebPreferences`; it stores the DevTools
+control separately. A fixed runtime attempt to open guest DevTools must create no
+DevTools contents, open no view and emit no opened event. Fixed guest JavaScript
+also checks that `process`, `require`, `Buffer`, `ipcRenderer` and `TeamDesktop`
+are unavailable. Only these named boolean/type observations enter the report;
+no arbitrary preference object or preload path is logged.
+
+Chrome captures wait for the actual profile manager, an enabled New profile
+control and absence of a workspace error/modal. A second capture after an ordinary
+UI reload must show both persisted synthetic profiles. Merely rendering the
+initial loading shell does not satisfy this check. Existing bundle-signature
+verification failures now record bounded `codesign --verify` diagnostics from the
+isolated candidate, without modifying signatures or security policy.
+
+Pinned source references:
+[preference snapshot serialization](https://github.com/electron/electron/blob/v44.5.1/shell/browser/web_contents_preferences.cc#L362-L383)
+and [DevTools enable check](https://github.com/electron/electron/blob/v44.5.1/shell/browser/api/electron_api_web_contents.cc#L3201-L3206).
