@@ -39,11 +39,21 @@ jobs:
         run: python -m PyInstaller --clean --noconfirm --distpath desktop/sidecar --workpath build/desktop-sidecar desktop/sidecar.spec
       - name: Package unsigned candidate only
         run: npm --prefix desktop run package:mac:candidate
+      - name: Exercise exact packaged app with blank synthetic profiles
+        run: node desktop/scripts/smoke-packaged-mac.cjs
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: TeamBrowser-mac-arm64-unsigned-candidate-NOT-INSTALL-READY
           path: |
             desktop/out/*.zip
             desktop/out/candidate.json
           if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TeamBrowser-native-smoke-${{ github.sha }}-NOT-INSTALL-ACCEPTANCE
+          path: desktop/out/native-smoke/
+          if-no-files-found: warn
           retention-days: 14

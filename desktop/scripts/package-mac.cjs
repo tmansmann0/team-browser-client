@@ -39,6 +39,9 @@ async function main() {
   const bundle = join(paths[0], 'TeamBrowser.app');
   await flipFuses(bundle, {
     version: FuseVersion.V1,
+    // Apple Silicon requires a valid local code signature after Mach-O fuse edits.
+    // This is an ad-hoc build signature, never Developer ID/Gatekeeper acceptance.
+    resetAdHocDarwinSignature: mode === 'unsigned-candidate',
     [FuseV1Options.RunAsNode]: false,
     [FuseV1Options.EnableCookieEncryption]: true,
     [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
@@ -67,7 +70,9 @@ async function main() {
   execFileSync('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', bundle, archive]);
   const report = {
     kind: 'desktop-build-candidate', version: packageInfo.version, platform: 'darwin', architecture: 'arm64',
-    mode, signed, notarized, native_acceptance: false, install_ready: false,
+    mode, signed, developer_id_signed: signed, notarized,
+    signature_kind: signed ? 'developer-id' : 'ad-hoc',
+    native_acceptance: false, install_ready: false,
     archive: archive.split('/').pop(), archive_sha256: hash(archive),
     electron: packageInfo.devDependencies.electron,
     node_lock_sha256: hash(join(desktop, 'package-lock.json')),

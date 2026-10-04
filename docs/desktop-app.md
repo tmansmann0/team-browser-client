@@ -190,3 +190,75 @@ while build/signing/provider/proxy prerequisites are unresolved.
 - [Electron fuses](https://www.electronjs.org/docs/latest/tutorial/fuses)
 - [PyInstaller operating model](https://pyinstaller.org/en/stable/operating-mode.html)
 - [Google OAuth secure-browser policy](https://developers.google.com/identity/protocols/oauth2/policies#secure-browsers)
+
+## Additive hosted-Mac packaged smoke (limited proof)
+
+The manual candidate workflow now includes `desktop/scripts/smoke-packaged-mac.cjs`.
+This is a **test definition, not a record that a native run passed**. Review the
+`native-smoke/summary.json` artifact for the actual exact-commit result. Linux
+Node unit tests of the harness do not establish native behavior.
+
+The harness verifies the candidate ZIP SHA-256 and workflow commit, extracts that
+same archive, and launches its actual `TeamBrowser.app/Contents/MacOS/TeamBrowser`
+twice on the authorized GitHub-hosted `macos-15` Apple Silicon runner. It does not
+use development Electron, a fake browser adapter, Playwright browser downloads,
+the user's computer, real accounts, proxy endpoints, signing credentials,
+accessibility automation, screen-recording permissions, or inspector ports.
+
+An explicit, fixed diagnostic argument selects fresh marked OS-temporary HOME,
+user-data and session-data directories before the app takes its instance lock.
+Ordinary launches do not change their paths or behavior. The existing packaged
+Python sidecar, BrowserWindow, sandboxed WebContentsViews, production adapter,
+trusted preload IPC, ownership routes and normal before-quit handler are used.
+The diagnostic accepts no arbitrary scripts, fixture URLs, external test server,
+credential input or remote-control endpoint.
+
+Production guests intentionally reject local/private web addresses. The smoke
+therefore supplies one fixed document at `https://native-smoke.example/` through
+Electron's documented per-session HTTPS protocol handler, solely in the two blank
+diagnostic sessions. It does not relax guest URL policy, sandbox, web security,
+CSP, permission/download denial or certificate-error handling. This controlled
+transport has no real network or TLS exchange and must not be called network,
+proxy, provider-login or certificate validation.
+
+Narrow checks include:
+
+- Actual packaged process, frozen sidecar and visible BrowserWindow startup.
+- Real native guest surfaces attached to the window, distinct Electron sessions,
+  sandbox/web-security preferences and absence of Node/preload privileges.
+- Same-origin A/B cookie, localStorage and IndexedDB separation, then same-profile
+  persistence after full app exit and relaunch with unchanged synthetic data.
+- Twelve repeated switches per launch preserving distinct live documents and
+  the intended native view visibility. This is privileged fixed test driving of
+  the ordinary IPC commands, not a mouse/keyboard UX acceptance test.
+- Nonblank native captures of bundled chrome and both guest surfaces, separately.
+  These are WebContents captures, not proof of full desktop composition.
+- Normal app quit closes native guests, releases profile leases and stops the
+  sidecar, confirmed again by the outer process. No forced cleanup counts as pass.
+
+An absent GUI, blocked startup, modal/keychain prompt, empty capture, assertion
+failure, crash or timeout fails the smoke; the record retains the exact last
+reached check. The harness does not remove quarantine, weaken Gatekeeper, change
+OS permissions, disable the sandbox or retry through a different security mode.
+Only fixed reports, native PNG captures and bounded logs from the isolated child
+are uploaded. Profile stores, cookies/databases, temporary HOME and private
+sidecar pipes are excluded.
+
+After editing Mach-O fuses, the official `@electron/fuses` tool resets the local
+ad-hoc signature for the unsigned-candidate build on Apple Silicon, as required
+by that platform for locally generated executable code. `signature_kind:ad-hoc`
+and `developer_id_signed:false` distinguish this from a Developer ID release;
+it is not notarization, trust, installability or a Gatekeeper bypass. The candidate
+filename retains `unsigned-candidate` to mean no Developer ID distribution signing.
+All existing fuse hardening remains enabled.
+
+Even a passed smoke sets only `packaged_synthetic_storage_smoke:true` in its own
+summary. `native_acceptance:false` and `install_ready:false` remain unchanged in
+both candidate and smoke records. Service workers/cache, actual proxies and
+network routing, provider accounts, full UI interaction, crash recovery,
+installation, upgrades and signed/notarized distribution remain separate gates.
+
+Primary API references: [session-scoped protocol handlers](https://www.electronjs.org/docs/latest/api/protocol),
+[native view visibility](https://www.electronjs.org/docs/latest/api/view),
+[WebContents captures](https://www.electronjs.org/docs/latest/api/web-contents), and
+[official fuse tooling's Apple Silicon requirement](https://github.com/electron/fuses#apple-silicon).

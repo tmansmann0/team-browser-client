@@ -10,12 +10,15 @@ const { electronAdapter } = require('./electron-adapter.cjs');
 
 app.enableSandbox();
 app.setName('TeamBrowser');
+const nativeSmoke = require('./native-smoke.cjs');
+const smoke = nativeSmoke.configure(app, process.argv);
 let window, sidecar, engine, origin;
 let quitting = false, quitApproved = false, fatalShown = false;
 function fatal(message) {
   if (fatalShown) return;
   fatalShown = true;
-  dialog.showErrorBox('TeamBrowser could not continue', message);
+  if (smoke) nativeSmoke.startupFailure(smoke, message);
+  else dialog.showErrorBox('TeamBrowser could not continue', message);
   app.quit();
 }
 function trusted(event) {
@@ -96,5 +99,6 @@ if (!app.requestSingleInstanceLock()) {
     window.webContents.on('render-process-gone', () => fatal('The browser controls stopped unexpectedly. TeamBrowser will close its tabs carefully before restarting.'));
     window.once('ready-to-show', () => { if (window && !window.isDestroyed()) window.show(); });
     await window.loadURL(`${origin}/app/`);
+    if (smoke) await nativeSmoke.run({ smoke, app, window, engine, sidecar });
   }).catch(() => fatal('The packaged workspace could not start. No browser or dependency was installed. Check the release package and its platform requirements.'));
 }

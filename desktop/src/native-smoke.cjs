@@ -1,0 +1,200 @@
+'use strict';
+// Fixed, opt-in diagnostic. No IPC/network listener, arbitrary script, or user data.
+// Exercises the real packaged main/sidecar/adapter; only fixture transport is synthetic.
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { guestURL } = require('./browser-engine.cjs');
+const ORIGIN = 'https://native-smoke.example';
+const FLAGS = ['--tbm-native-smoke-root=', '--tbm-native-smoke-phase='];
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+function config(argv, platform = process.platform, arch = process.arch) {
+  const requested = argv.filter(arg => arg.startsWith('--tbm-native-smoke'));
+  if (!requested.length) return null;
+  assert.equal(platform, 'darwin', 'Native smoke requires macOS');
+  assert.equal(arch, 'arm64', 'Native smoke requires Apple Silicon');
+  assert.equal(requested.length, 2, 'Both exact smoke arguments are required');
+  const values = FLAGS.map(flag => {
+    const matches = requested.filter(arg => arg.startsWith(flag));
+    assert.equal(matches.length, 1, 'Invalid smoke arguments');
+    return matches[0].slice(flag.length);
+  });
+  const [root, phase] = values;
+  assert.ok(['seed', 'reopen'].includes(phase), 'Invalid smoke phase');
+  assert.ok(path.isAbsolute(root), 'Smoke root must be absolute');
+  const canonical = fs.realpathSync(root);
+  const temp = fs.realpathSync(os.tmpdir());
+  assert.equal(path.dirname(canonical), temp, 'Smoke root must be directly inside OS temporary directory');
+  assert.match(path.basename(canonical), /^tbm-native-smoke-[A-Za-z0-9]+$/, 'Invalid smoke root');
+  assert.equal(fs.lstatSync(root).isSymbolicLink(), false, 'Smoke root cannot be a symlink');
+  assert.equal(fs.readFileSync(path.join(root, 'fixture-marker'), 'utf8'), 'TeamBrowser blank native smoke v1\n');
+  for (const name of ['home', 'user-data', 'session-data', 'evidence']) {
+    const directory = path.join(canonical, name);
+    if (!fs.existsSync(directory)) fs.mkdirSync(directory, { mode: 0o700 });
+    assert.equal(fs.realpathSync(directory), directory, 'Smoke directories cannot redirect');
+  }
+  if (phase === 'seed') {
+    for (const name of ['home', 'user-data', 'session-data']) assert.equal(fs.readdirSync(path.join(canonical, name)).length, 0, 'Seed smoke requires empty profiles');
+  }
+  return { root: canonical, phase };
+}
+function configure(app, input) {
+  const value = config(input);
+  if (!value) return null;
+  assert.ok(app.isPackaged, 'Smoke must launch the packaged app');
+  app.setPath('home', path.join(value.root, 'home'));
+  app.setPath('userData', path.join(value.root, 'user-data'));
+  app.setPath('sessionData', path.join(value.root, 'session-data'));
+  return value;
+}
+async function until(check, message, ms = 15000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) { if (await check()) return; await wait(100); }
+  throw new Error(message);
+}
+function fixture(request) {
+  const url = new URL(request.url);
+  if (url.origin !== ORIGIN || url.pathname !== '/') return new Response('No external fixtures', { status: 403 });
+  return new Response('<!doctype html><html><head><meta charset="utf-8"><title>TeamBrowser native fixture</title><style>body{margin:0;background:#edf5fc;color:#12314a;font:24px system-ui;padding:48px}h1{font-size:38px}#value{padding:24px;background:#164c72;color:white;border-radius:16px}</style></head><body><h1>Native profile storage fixture</h1><p>Controlled in-memory HTTPS document. No real account or network server.</p><div id="value">Uninitialized</div></body></html>', {
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; frame-src 'none'; base-uri 'none'" },
+  });
+}
+// Fixed test expressions only. No expression comes from arguments, a file, or a website.
+const READ_STORAGE = `(async () => {
+  const db = await new Promise((resolve, reject) => { const r = indexedDB.open('tbm-native-smoke', 1); r.onupgradeneeded = () => r.result.createObjectStore('values'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+  const indexed = await new Promise((resolve, reject) => { const r = db.transaction('values').objectStore('values').get('marker'); r.onsuccess = () => resolve(r.result ?? null); r.onerror = () => reject(r.error); }); db.close();
+  return { cookie: document.cookie, local: localStorage.getItem('marker'), indexed, live: window.smokeLive ?? null, node: typeof process, require: typeof require, bridge: typeof TeamDesktop, origin: location.origin };
+})()`;
+function writeStorage(label) {
+  assert.ok(['A', 'B'].includes(label));
+  return `(async () => {
+    const marker = ${JSON.stringify(label)};
+    document.cookie = 'tbm_smoke=' + marker + '; Max-Age=86400; Path=/; Secure; SameSite=Strict';
+    localStorage.setItem('marker', marker);
+    const db = await new Promise((resolve, reject) => { const r = indexedDB.open('tbm-native-smoke', 1); r.onupgradeneeded = () => r.result.createObjectStore('values'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+    await new Promise((resolve, reject) => { const t = db.transaction('values', 'readwrite'); t.objectStore('values').put(marker, 'marker'); t.oncomplete = resolve; t.onerror = () => reject(t.error); }); db.close();
+    window.smokeLive = marker + '-live'; document.getElementById('value').textContent = 'Profile ' + marker;
+    return true;
+  })()`;
+}
+function verifyStorage(value, expected, live = null) {
+  assert.equal(value.origin, ORIGIN, 'Fixture origin was not preserved');
+  assert.equal(value.cookie, expected ? `tbm_smoke=${expected}` : '', 'Cookie isolation/persistence failed');
+  assert.equal(value.local, expected, 'localStorage isolation/persistence failed');
+  assert.equal(value.indexed, expected, 'IndexedDB isolation/persistence failed');
+  assert.equal(value.live, live, 'Live document was recreated or crossed profiles');
+  for (const key of ['node', 'require', 'bridge']) assert.equal(value[key], 'undefined', 'Guest exposed privileged capability');
+}
+async function capture(contents, target) {
+  const image = await contents.capturePage();
+  assert.equal(image.isEmpty(), false, 'Native capture was empty; rendering not established');
+  const size = image.getSize();
+  assert.ok(size.width >= 300 && size.height >= 100, 'Native surface was too small');
+  const bitmap = image.toBitmap(), colors = new Set();
+  for (let i = 0; i < bitmap.length && colors.size < 16; i += 4) colors.add(bitmap.readUInt32LE(i));
+  assert.ok(colors.size >= 8, 'Native capture was blank; rendering not established');
+  fs.writeFileSync(target, image.toPNG());
+  return size;
+}
+async function run({ smoke, app, window, engine, sidecar }) {
+  const evidence = path.join(smoke.root, 'evidence');
+  const report = { kind: 'packaged-native-synthetic-storage-smoke', phase: smoke.phase, status: 'running', native_acceptance: false, install_ready: false,
+    platform: process.platform, architecture: process.arch, electron: process.versions.electron, chromium: process.versions.chrome,
+    fixture_transport: 'session-scoped in-memory HTTPS handler; no network/TLS/proxy validation',
+    limitations: ['Not real-account/provider login acceptance', 'Not network/proxy/DNS/TLS/leak acceptance', 'Not service-worker/cache acceptance', 'Not install/update/Gatekeeper acceptance', 'Not end-to-end mouse/keyboard or composited desktop verification'], checks: [] };
+  const save = () => fs.writeFileSync(path.join(evidence, `${smoke.phase}.json`), JSON.stringify(report, null, 2) + '\n');
+  const check = name => { report.checks.push(name); save(); };
+  save();
+  try {
+    assert.ok(app.isPackaged, 'Expected packaged Electron');
+    assert.ok(sidecar.child && !sidecar.exited, 'Frozen sidecar did not remain running');
+    report.sidecar_pid = sidecar.child.pid;
+    check('packaged_app_and_frozen_sidecar_started');
+    await until(() => window.isVisible(), 'Packaged app window was not shown');
+    const chrome = expression => window.webContents.executeJavaScript(expression);
+    await until(() => chrome("Boolean(window.TeamDesktop && document.querySelector('#workspace-root, #workspace-content, main'))"), 'Bundled chrome/IPC preload did not render');
+    report.chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-chrome.png`));
+    check('real_browser_window_and_bundled_chrome_rendered');
+    const api = (method, url, body) => chrome(`(async () => { const config = await (await fetch('/local/config')).json(); const response = await fetch(${JSON.stringify(url)}, {method:${JSON.stringify(method)}, headers:{'Content-Type':'application/json','X-Local-CSRF':config.csrf_token}, ${body === undefined ? '' : 'body:' + JSON.stringify(JSON.stringify(body))}}); if(!response.ok) throw new Error('Smoke workspace API failed'); return response.json(); })()`);
+    let profiles = await api('GET', '/local/v1/profiles');
+    if (smoke.phase === 'seed') {
+      assert.equal(profiles.length, 0, 'Expected blank sidecar workspace');
+      for (const label of ['A', 'B']) await api('POST', '/local/v1/profiles', { name: `Native smoke ${label}`, preset_id: 'desktop', network_policy: 'local_direct' });
+      profiles = await api('GET', '/local/v1/profiles');
+    }
+    assert.equal(profiles.length, 2, 'Expected exactly two synthetic profiles');
+    for (const label of ['A', 'B']) assert.equal(profiles.filter(item => item.name === `Native smoke ${label}`).length, 1);
+    if (smoke.phase === 'reopen') { assert.ok(profiles.every(item => item.state === 'stopped'), 'Prior shutdown did not release profile leases'); check('metadata_persisted_and_previous_leases_released'); }
+    const command = value => chrome(`window.TeamDesktop.command(${JSON.stringify(value)})`);
+    const views = new Map(), sessions = new Set();
+    for (const label of ['A', 'B']) {
+      const profile = profiles.find(item => item.name === `Native smoke ${label}`);
+      await command({ action: 'activate_profile', profile_id: profile.id, expected_revision: profile.revision });
+      const owned = engine.profiles.get(profile.id);
+      assert.ok(owned, 'Real engine did not claim profile');
+      assert.equal(sessions.has(owned.session), false, 'Profiles shared one Electron session'); sessions.add(owned.session);
+      // This does not relax guestURL, webRequest, sandbox, CSP, or permission policy.
+      // It substitutes fixed response bytes only for this diagnostic's blank sessions.
+      assert.equal(guestURL(ORIGIN + '/'), ORIGIN + '/');
+      owned.session.protocol.handle('https', fixture);
+      await command({ action: 'create_tab', profile_id: profile.id, url: ORIGIN + '/' });
+      const tab = engine.tabs.get(engine.snapshot().active_tab_id);
+      assert.ok(tab && window.contentView.children.includes(tab.view), 'Guest is not a native child view');
+      const wc = tab.view.webContents;
+      const preferences = wc.getLastWebPreferences();
+      assert.equal(preferences.sandbox, true); assert.equal(preferences.contextIsolation, true);
+      assert.equal(preferences.nodeIntegration, false); assert.equal(preferences.webSecurity, true);
+      assert.equal(preferences.devTools, false); assert.ok(!preferences.preload, 'Guest unexpectedly has a preload');
+      await until(() => !wc.isLoading() && wc.getURL() === ORIGIN + '/', 'Native fixture navigation did not finish');
+      await until(() => wc.executeJavaScript("Boolean(document.getElementById('value'))"), 'Native fixture DOM did not render');
+      verifyStorage(await wc.executeJavaScript(READ_STORAGE), smoke.phase === 'seed' ? null : label);
+      await wc.executeJavaScript(writeStorage(label));
+      verifyStorage(await wc.executeJavaScript(READ_STORAGE), label, label + '-live');
+      views.set(label, { profile, tab, wc });
+    }
+    const first = views.get('A');
+    await assert.rejects(command({ action: 'navigate', profile_id: first.profile.id, tab_id: first.tab.id, url: 'http://127.0.0.1:8765/' }));
+    check('production_guest_private_address_policy_remains_enforced');
+    check(smoke.phase === 'seed' ? 'real_A_B_cookie_localStorage_IndexedDB_isolation' : 'real_A_B_cookie_localStorage_IndexedDB_restart_persistence');
+    for (let index = 0; index < 12; index++) {
+      const label = index % 2 ? 'B' : 'A';
+      const current = views.get(label);
+      await command({ action: 'activate_tab', profile_id: current.profile.id, tab_id: current.tab.id });
+      await command({ action: 'set_content_bounds', x: 280, y: 140, width: 950, height: 640, visible: true });
+      assert.equal(engine.snapshot().profile_id, current.profile.id);
+      assert.ok(current.tab.view.getVisible(), 'Selected native view was not visible');
+      for (const [otherLabel, other] of views) if (otherLabel !== label) assert.equal(other.tab.view.getVisible(), false, 'Background native view remained visible');
+      verifyStorage(await current.wc.executeJavaScript(READ_STORAGE), label, label + '-live');
+    }
+    check('twelve_switches_keep_distinct_live_native_documents');
+    for (const [label, item] of views) {
+      await command({ action: 'activate_tab', profile_id: item.profile.id, tab_id: item.tab.id });
+      await command({ action: 'set_content_bounds', x: 280, y: 140, width: 950, height: 640, visible: true });
+      await wait(150);
+      report[`${label}_capture`] = await capture(item.wc, path.join(evidence, `${smoke.phase}-profile-${label}.png`));
+      assert.ok(item.wc.getOSProcessId() > 0, 'Native renderer process absent');
+    }
+    check('both_native_guest_surfaces_have_nonblank_captures');
+    // Normal before-quit handler must close views, flush storage, release leases,
+    // and stop the owned sidecar. Do not set quitApproved or bypass that path.
+    app.once('will-quit', () => {
+      try {
+        assert.equal(sidecar.exited, true, 'Sidecar shutdown was not confirmed');
+        assert.equal(engine.profiles.size, 0, 'Native profile ownership was not released');
+        assert.equal(engine.tabs.size, 0, 'Native guest views survived shutdown');
+        report.status = 'passed'; check('normal_app_quit_closed_views_released_leases_and_stopped_sidecar');
+      } catch (error) { report.status = 'failed'; report.failure = error.message; save(); }
+    });
+    report.status = 'awaiting_normal_shutdown'; save(); app.quit();
+  } catch (error) {
+    report.status = 'failed'; report.failure = error.message; save(); app.quit();
+  }
+}
+function startupFailure(smoke, message) {
+  fs.writeFileSync(path.join(smoke.root, 'evidence', `${smoke.phase}.json`), JSON.stringify({
+    kind: 'packaged-native-synthetic-storage-smoke', phase: smoke.phase, status: 'failed',
+    native_acceptance: false, install_ready: false, checks: [], failure: message,
+  }, null, 2) + '\n');
+}
+module.exports = { config, configure, run, fixture, verifyStorage, ORIGIN, startupFailure };
