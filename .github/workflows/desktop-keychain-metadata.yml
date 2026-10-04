@@ -1,0 +1,36 @@
+name: compare default Keychain references (manual, read-only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  default-keychain-metadata:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require native Apple Silicon
+        run: test "$(uname -m)" = arm64
+      - name: Validate metadata helper contracts
+        run: node --test desktop/tests/keychain-metadata.test.cjs
+      - name: Compile metadata-only native API helper with existing SDK
+        run: |
+          mkdir -p desktop/out
+          xcrun clang -std=c11 -Wall -Wextra -Werror -Wno-deprecated-declarations \
+            desktop/scripts/default-keychain-metadata.c \
+            -framework Security -framework CoreFoundation \
+            -o desktop/out/default-keychain-metadata-helper
+      - name: Compare normal and empty process HOME metadata once
+        run: node desktop/scripts/compare-keychain-metadata.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TeamBrowser-keychain-metadata-${{ github.sha }}-NOT-ACCEPTANCE
+          path: desktop/out/default-keychain-metadata.json
+          if-no-files-found: error
+          retention-days: 1
