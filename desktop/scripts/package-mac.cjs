@@ -5,6 +5,7 @@ const { join, resolve } = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const { platform, arch } = require('node:os');
+const { copyBundledSidecar } = require('./copy-sidecar.cjs');
 const root = resolve(__dirname, '../..');
 const desktop = join(root, 'desktop');
 function hash(path) { return createHash('sha256').update(readFileSync(path)).digest('hex'); }
@@ -33,10 +34,13 @@ async function main() {
     platform: 'darwin', arch: 'arm64', electronVersion: packageInfo.devDependencies.electron,
     asar: true, prune: false, overwrite: false,
     icon: join(root, 'src/team_browser/static/brand/TeamBrowser.icns'),
-    extraResource: [sidecar],
     extendInfo: { LSMinimumSystemVersion: '13.0' },
   });
   const bundle = join(paths[0], 'TeamBrowser.app');
+  // Packager v20 extraResource uses fs.cp without verbatimSymlinks, which rewrites
+  // PyInstaller's relative framework links to absolute build-machine locations.
+  // Copy explicitly before signing, preserving and validating internal targets.
+  const sidecarCopy = copyBundledSidecar(sidecar, join(bundle, 'Contents/Resources/tbm-sidecar'));
   await flipFuses(bundle, {
     version: FuseVersion.V1,
     // Apple Silicon requires a valid local code signature after Mach-O fuse edits.
@@ -49,6 +53,11 @@ async function main() {
     [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
     [FuseV1Options.OnlyLoadAppFromAsar]: true,
   });
+  if (mode === 'unsigned-candidate') {
+    // Verify build integrity before archiving; this does not establish Gatekeeper
+    // trust, Developer ID signing, notarization, or installation acceptance.
+    execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], { stdio: 'inherit' });
+  }
   let signed = false, notarized = false;
   if (mode === 'signed-candidate') {
     const { signAsync } = await import('@electron/osx-sign');
@@ -72,6 +81,7 @@ async function main() {
     kind: 'desktop-build-candidate', version: packageInfo.version, platform: 'darwin', architecture: 'arm64',
     mode, signed, developer_id_signed: signed, notarized,
     signature_kind: signed ? 'developer-id' : 'ad-hoc',
+    sidecar_copy: sidecarCopy,
     native_acceptance: false, install_ready: false,
     archive: archive.split('/').pop(), archive_sha256: hash(archive),
     electron: packageInfo.devDependencies.electron,

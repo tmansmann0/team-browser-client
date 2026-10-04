@@ -285,3 +285,28 @@ isolated candidate, without modifying signatures or security policy.
 Pinned source references:
 [preference snapshot serialization](https://github.com/electron/electron/blob/v44.5.1/shell/browser/web_contents_preferences.cc#L362-L383)
 and [DevTools enable check](https://github.com/electron/electron/blob/v44.5.1/shell/browser/api/electron_api_web_contents.cc#L3201-L3206).
+
+### Bounded storage and compositor evidence
+
+Storage probes now record each active operation before awaiting it, with separate
+cookie, localStorage, IndexedDB open/upgrade, read/write transaction and close
+stages. Main-process deadlines and explicit IndexedDB blocked/abort/error handlers
+prevent an unresolved operation from silently consuming the entire test. If the
+native main process itself becomes unresponsive, the outer watchdog includes the
+last recorded operation. This identifies the stalled boundary without assuming
+that a cookie/keychain prompt, IndexedDB or background scheduling caused it.
+
+Each native guest is displayed with normal content bounds before storage probes.
+Captures require two animation frames from a visible document, a bounded yield
+for paint, and a nonblank native image. The initial empty workspace and subsequent
+two-profile workspace must produce different capture hashes in the seed phase.
+No background-throttling, GPU, security or permission setting is changed to force
+a result. Failure to produce frames is a rendering failure, not accepted proof.
+
+The candidate packager copies the frozen sidecar with `verbatimSymlinks:true`
+before fuse/signature work. Only relative, internal, non-dangling sidecar links
+are allowed; link targets must remain identical after copying. This avoids
+Electron Packager 20's extra-resource copy rewriting PyInstaller framework links
+to build-machine paths. Ad-hoc bundle integrity must pass `codesign --verify
+--deep --strict` before a candidate ZIP is created. This is build integrity only,
+not Developer ID, notarization, Gatekeeper or installation acceptance.

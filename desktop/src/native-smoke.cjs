@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { createHash } = require('node:crypto');
 const { guestURL } = require('./browser-engine.cjs');
 const ORIGIN = 'https://native-smoke.example';
 const FLAGS = ['--tbm-native-smoke-root=', '--tbm-native-smoke-phase='];
@@ -61,22 +62,60 @@ function fixture(request) {
   });
 }
 // Fixed test expressions only. No expression comes from arguments, a file, or a website.
-const READ_STORAGE = `(async () => {
-  const db = await new Promise((resolve, reject) => { const r = indexedDB.open('tbm-native-smoke', 1); r.onupgradeneeded = () => r.result.createObjectStore('values'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
-  const indexed = await new Promise((resolve, reject) => { const r = db.transaction('values').objectStore('values').get('marker'); r.onsuccess = () => resolve(r.result ?? null); r.onerror = () => reject(r.error); }); db.close();
-  return { cookie: document.cookie, local: localStorage.getItem('marker'), indexed, live: window.smokeLive ?? null, node: typeof process, require: typeof require, bridge: typeof TeamDesktop, origin: location.origin };
+const OPEN_DATABASE = `(async () => {
+  await new Promise((resolve, reject) => {
+    let settled = false;
+    const fail = code => { if (!settled) { settled = true; clearTimeout(timer); reject(new Error(code)); } };
+    const timer = setTimeout(() => fail('indexeddb_open_renderer_timeout'), 4000);
+    const r = indexedDB.open('tbm-native-smoke', 1);
+    r.onblocked = () => fail('indexeddb_open_blocked');
+    r.onerror = () => fail('indexeddb_open_' + (r.error?.name || 'error'));
+    r.onupgradeneeded = () => { try { r.result.createObjectStore('values'); } catch { fail('indexeddb_upgrade_error'); } };
+    r.onsuccess = () => { if (settled) { r.result.close(); return; } settled = true; clearTimeout(timer); window.smokeDatabase = r.result; resolve(); };
+  }); return true;
 })()`;
-function writeStorage(label) {
+const READ_DATABASE = `(async () => {
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('indexeddb_read_renderer_timeout')), 4000);
+    const t = window.smokeDatabase.transaction('values');
+    const r = t.objectStore('values').get('marker'); let value = null;
+    r.onsuccess = () => { value = r.result ?? null; };
+    t.oncomplete = () => { clearTimeout(timer); resolve(value); };
+    t.onerror = t.onabort = () => { clearTimeout(timer); reject(new Error('indexeddb_read_' + (t.error?.name || 'aborted'))); };
+  });
+})()`;
+async function boundedOperation(name, action, ms = 6000) {
+  let timer;
+  try { return await Promise.race([Promise.resolve().then(action), new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`Native operation timed out: ${name}`)), ms);
+  })]); } finally { clearTimeout(timer); }
+}
+async function readStorage(wc, step) {
+  const value = await step('read_origin_and_globals', () => wc.executeJavaScript(`({
+    origin: location.origin, live: window.smokeLive ?? null, node: typeof process,
+    require: typeof require, bridge: typeof TeamDesktop })`));
+  value.cookie = await step('read_cookie', () => wc.executeJavaScript('document.cookie'));
+  value.local = await step('read_localStorage', () => wc.executeJavaScript("localStorage.getItem('marker')"));
+  await step('open_indexedDB_for_read', () => wc.executeJavaScript(OPEN_DATABASE));
+  try { value.indexed = await step('read_indexedDB_transaction', () => wc.executeJavaScript(READ_DATABASE)); }
+  finally { await step('close_indexedDB_after_read', () => wc.executeJavaScript('window.smokeDatabase?.close(); delete window.smokeDatabase; true')); }
+  return value;
+}
+async function writeStorage(wc, label, step) {
   assert.ok(['A', 'B'].includes(label));
-  return `(async () => {
-    const marker = ${JSON.stringify(label)};
-    document.cookie = 'tbm_smoke=' + marker + '; Max-Age=86400; Path=/; Secure; SameSite=Strict';
-    localStorage.setItem('marker', marker);
-    const db = await new Promise((resolve, reject) => { const r = indexedDB.open('tbm-native-smoke', 1); r.onupgradeneeded = () => r.result.createObjectStore('values'); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
-    await new Promise((resolve, reject) => { const t = db.transaction('values', 'readwrite'); t.objectStore('values').put(marker, 'marker'); t.oncomplete = resolve; t.onerror = () => reject(t.error); }); db.close();
-    window.smokeLive = marker + '-live'; document.getElementById('value').textContent = 'Profile ' + marker;
-    return true;
-  })()`;
+  await step('write_cookie', () => wc.executeJavaScript(`document.cookie = 'tbm_smoke=${label}; Max-Age=86400; Path=/; Secure; SameSite=Strict'; true`));
+  await step('write_localStorage', () => wc.executeJavaScript(`localStorage.setItem('marker', '${label}'); true`));
+  await step('open_indexedDB_for_write', () => wc.executeJavaScript(OPEN_DATABASE));
+  try {
+    await step('write_indexedDB_transaction', () => wc.executeJavaScript(`new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('indexeddb_write_renderer_timeout')), 4000);
+      const t = window.smokeDatabase.transaction('values', 'readwrite');
+      t.objectStore('values').put('${label}', 'marker');
+      t.oncomplete = () => { clearTimeout(timer); resolve(true); };
+      t.onerror = t.onabort = () => { clearTimeout(timer); reject(new Error('indexeddb_write_' + (t.error?.name || 'aborted'))); };
+    })`));
+  } finally { await step('close_indexedDB_after_write', () => wc.executeJavaScript('window.smokeDatabase?.close(); delete window.smokeDatabase; true')); }
+  await step('set_live_document_marker', () => wc.executeJavaScript(`window.smokeLive = '${label}-live'; document.getElementById('value').textContent = 'Profile ${label}'; true`));
 }
 function verifyStorage(value, expected, live = null) {
   assert.equal(value.origin, ORIGIN, 'Fixture origin was not preserved');
@@ -131,16 +170,24 @@ const CHROME_READY = `Boolean(document.readyState === 'complete' && window.TeamD
   document.querySelector('.profile-manager') && document.querySelector('#new-profile') &&
   !document.querySelector('#new-profile').disabled &&
   !document.querySelector('#workspace-status .workspace-alert.error') && !document.querySelector('dialog[open]'))`;
-async function capture(contents, target) {
-  const image = await contents.capturePage();
+async function capture(contents, target, step) {
+  const frame = await step('wait_for_native_paint_frames', () => contents.executeJavaScript(`new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Native renderer did not produce two animation frames')), 4000);
+    requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); resolve({ frames: 2, visibility: document.visibilityState }); }));
+  })`));
+  assert.equal(frame.visibility, 'visible', 'Native capture target was not visible');
+  // rAF callbacks precede paint. Yield the main process before copying the frame.
+  await wait(100);
+  const image = await step('capture_native_surface', () => contents.capturePage());
   assert.equal(image.isEmpty(), false, 'Native capture was empty; rendering not established');
   const size = image.getSize();
   assert.ok(size.width >= 300 && size.height >= 100, 'Native surface was too small');
   const bitmap = image.toBitmap(), colors = new Set();
   for (let i = 0; i < bitmap.length && colors.size < 16; i += 4) colors.add(bitmap.readUInt32LE(i));
   assert.ok(colors.size >= 8, 'Native capture was blank; rendering not established');
-  fs.writeFileSync(target, image.toPNG());
-  return size;
+  const png = image.toPNG();
+  fs.writeFileSync(target, png);
+  return { ...size, paint: frame, sha256: createHash('sha256').update(png).digest('hex') };
 }
 async function run({ smoke, app, window, engine, sidecar }) {
   const evidence = path.join(smoke.root, 'evidence');
@@ -150,6 +197,18 @@ async function run({ smoke, app, window, engine, sidecar }) {
     limitations: ['Not real-account/provider login acceptance', 'Not network/proxy/DNS/TLS/leak acceptance', 'Not service-worker/cache acceptance', 'Not install/update/Gatekeeper acceptance', 'Not end-to-end mouse/keyboard or composited desktop verification'], checks: [] };
   const save = () => fs.writeFileSync(path.join(evidence, `${smoke.phase}.json`), JSON.stringify(report, null, 2) + '\n');
   const check = name => { report.checks.push(name); save(); };
+  report.completed_operations = [];
+  const step = prefix => async (name, action) => {
+    const operation = `${prefix}:${name}`;
+    report.active_operation = operation; save();
+    try {
+      const result = await boundedOperation(operation, action);
+      report.completed_operations.push(operation); report.active_operation = null; save();
+      return result;
+    } catch (error) {
+      report.failed_operation ||= operation; save(); throw error;
+    }
+  };
   save();
   try {
     assert.ok(app.isPackaged, 'Expected packaged Electron');
@@ -159,7 +218,7 @@ async function run({ smoke, app, window, engine, sidecar }) {
     await until(() => window.isVisible(), 'Packaged app window was not shown');
     const chrome = expression => window.webContents.executeJavaScript(expression);
     await until(() => chrome(CHROME_READY), 'Bundled workspace did not settle into its usable profile manager');
-    report.chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-chrome.png`));
+    report.chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-chrome.png`), step('initial_chrome'));
     check('real_browser_window_and_settled_profile_manager_rendered');
     const api = (method, url, body) => chrome(`(async () => { const config = await (await fetch('/local/config')).json(); const response = await fetch(${JSON.stringify(url)}, {method:${JSON.stringify(method)}, headers:{'Content-Type':'application/json','X-Local-CSRF':config.csrf_token}, ${body === undefined ? '' : 'body:' + JSON.stringify(JSON.stringify(body))}}); if(!response.ok) throw new Error('Smoke workspace API failed'); return response.json(); })()`);
     let profiles = await api('GET', '/local/v1/profiles');
@@ -175,7 +234,8 @@ async function run({ smoke, app, window, engine, sidecar }) {
     // path displays the two durable profiles before any native tabs are opened.
     await window.webContents.loadURL(window.webContents.getURL());
     await until(() => chrome(CHROME_READY + " && document.querySelectorAll('[data-select]').length === 2"), 'Bundled workspace did not render both synthetic profiles');
-    report.profiles_chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-profiles-chrome.png`));
+    report.profiles_chrome_capture = await capture(window.webContents, path.join(evidence, `${smoke.phase}-profiles-chrome.png`), step('profiles_chrome'));
+    if (smoke.phase === 'seed') assert.notEqual(report.chrome_capture.sha256, report.profiles_chrome_capture.sha256, 'Compositor returned unchanged chrome after profiles were created');
     check('bundled_profile_manager_displays_both_durable_synthetic_profiles');
     report.guest_security = {};
     const command = value => chrome(`window.TeamDesktop.command(${JSON.stringify(value)})`);
@@ -193,9 +253,12 @@ async function run({ smoke, app, window, engine, sidecar }) {
       await command({ action: 'create_tab', profile_id: profile.id, url: ORIGIN + '/' });
       const tab = engine.tabs.get(engine.snapshot().active_tab_id);
       assert.ok(tab && window.contentView.children.includes(tab.view), 'Guest is not a native child view');
+      await command({ action: 'set_content_bounds', x: 280, y: 140, width: 950, height: 500, visible: true });
+      assert.equal(tab.view.getVisible(), true, 'Native guest must be displayed before storage probes');
       const wc = tab.view.webContents;
       const security = { preferences: preferenceEvidence(wc.getLastWebPreferences()),
-        snapshot_omissions: ['devTools', 'preload'] };
+        snapshot_omissions: ['devTools', 'preload'],
+        native_view: { visible: tab.view.getVisible(), bounds: tab.view.getBounds() } };
       report.guest_security[label] = security; save();
       verifyPreferences(security.preferences);
       await until(() => !wc.isLoading() && wc.getURL() === ORIGIN + '/', 'Native fixture navigation did not finish');
@@ -205,9 +268,9 @@ async function run({ smoke, app, window, engine, sidecar }) {
       security.devtools_probe = await probeDevToolsDisabled(wc); save();
       verifyDevToolsDisabled(security.devtools_probe);
       check(`native_guest_${label}_strict_preferences_and_privilege_probes_passed`);
-      verifyStorage(await wc.executeJavaScript(READ_STORAGE), smoke.phase === 'seed' ? null : label);
-      await wc.executeJavaScript(writeStorage(label));
-      verifyStorage(await wc.executeJavaScript(READ_STORAGE), label, label + '-live');
+      verifyStorage(await readStorage(wc, step(`${label}_initial_storage`)), smoke.phase === 'seed' ? null : label);
+      await writeStorage(wc, label, step(`${label}_write_storage`));
+      verifyStorage(await readStorage(wc, step(`${label}_after_write`)), label, label + '-live');
       views.set(label, { profile, tab, wc });
     }
     const first = views.get('A');
@@ -222,14 +285,14 @@ async function run({ smoke, app, window, engine, sidecar }) {
       assert.equal(engine.snapshot().profile_id, current.profile.id);
       assert.ok(current.tab.view.getVisible(), 'Selected native view was not visible');
       for (const [otherLabel, other] of views) if (otherLabel !== label) assert.equal(other.tab.view.getVisible(), false, 'Background native view remained visible');
-      verifyStorage(await current.wc.executeJavaScript(READ_STORAGE), label, label + '-live');
+      verifyStorage(await readStorage(current.wc, step(`${label}_switch_${index}`)), label, label + '-live');
     }
     check('twelve_switches_keep_distinct_live_native_documents');
     for (const [label, item] of views) {
       await command({ action: 'activate_tab', profile_id: item.profile.id, tab_id: item.tab.id });
       await command({ action: 'set_content_bounds', x: 280, y: 140, width: 950, height: 640, visible: true });
       await wait(150);
-      report[`${label}_capture`] = await capture(item.wc, path.join(evidence, `${smoke.phase}-profile-${label}.png`));
+      report[`${label}_capture`] = await capture(item.wc, path.join(evidence, `${smoke.phase}-profile-${label}.png`), step(`${label}_capture`));
       assert.ok(item.wc.getOSProcessId() > 0, 'Native renderer process absent');
     }
     check('both_native_guest_surfaces_have_nonblank_captures');
@@ -254,4 +317,4 @@ function startupFailure(smoke, message) {
     native_acceptance: false, install_ready: false, checks: [], failure: message,
   }, null, 2) + '\n');
 }
-module.exports = { config, configure, run, fixture, verifyStorage, ORIGIN, startupFailure, preferenceEvidence, verifyPreferences, probeDevToolsDisabled, verifyDevToolsDisabled, verifyGuestPrivileges, CHROME_READY };
+module.exports = { config, configure, run, fixture, verifyStorage, ORIGIN, startupFailure, preferenceEvidence, verifyPreferences, probeDevToolsDisabled, verifyDevToolsDisabled, verifyGuestPrivileges, CHROME_READY, boundedOperation, readStorage, writeStorage, OPEN_DATABASE, READ_DATABASE };

@@ -51,7 +51,8 @@ async function launch(executable, root, phase) {
     while (alive(report.sidecar_pid) && Date.now() < deadline) await sleep(100);
     result.sidecar_process_gone = !alive(report.sidecar_pid);
   }
-  assert.equal(timedOut, false, `${phase}: packaged app did not finish within 120 seconds; possible startup/modal/rendering limitation`);
+  result.last_native_operation = report?.failed_operation || report?.active_operation || null;
+  assert.equal(timedOut, false, `${phase}: packaged app did not finish within 120 seconds; last native operation: ${result.last_native_operation || 'not recorded'}; possible startup/modal/rendering limitation`);
   assert.equal(result.error, undefined, `${phase}: could not start packaged executable`);
   assert.equal(result.signal, null, `${phase}: packaged app terminated by ${result.signal}; inspect isolated process log/signature diagnostics`);
   assert.equal(result.code, 0, `${phase}: packaged app exited unsuccessfully`);

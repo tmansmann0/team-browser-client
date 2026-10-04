@@ -116,3 +116,38 @@ test('signature failure output is bounded, strips controls, and redacts its isol
   assert.match(evidence.output, /bad signature/); assert.match(evidence.output, /\[SMOKE_ROOT\]/);
   assert.doesNotMatch(evidence.output, /\u0000|\/tmp\/fixture/);
 });
+
+
+const vm = require('node:vm');
+const { boundedOperation, readStorage, OPEN_DATABASE, READ_DATABASE } = require('../src/native-smoke.cjs');
+test('each hung native operation fails with its exact name rather than waiting for outer watchdog', async () => {
+  await assert.rejects(boundedOperation('A:open_indexedDB_for_read', () => new Promise(() => {}), 10), /A:open_indexedDB_for_read/);
+  assert.equal(await boundedOperation('quick', () => 42), 42);
+  await assert.rejects(boundedOperation('broken', () => { throw new Error('explicit failure'); }), /explicit failure/);
+});
+test('storage reads expose separate cookie/localStorage/IndexedDB stages', async () => {
+  const seen = [];
+  const wc = { executeJavaScript: async expression => {
+    if (expression.includes('origin: location.origin')) return { origin: ORIGIN, live: 'A-live', node: 'undefined', require: 'undefined', bridge: 'undefined' };
+    if (expression === 'document.cookie') return 'tbm_smoke=A';
+    if (expression.includes("localStorage.getItem")) return 'A';
+    if (expression === READ_DATABASE) return 'A';
+    return true;
+  } };
+  const value = await readStorage(wc, async (name, action) => { seen.push(name); return action(); });
+  verifyStorage(value, 'A', 'A-live');
+  assert.deepEqual(seen, ['read_origin_and_globals', 'read_cookie', 'read_localStorage', 'open_indexedDB_for_read', 'read_indexedDB_transaction', 'close_indexedDB_after_read']);
+});
+test('IndexedDB blocked opening explicitly rejects instead of silently hanging', async () => {
+  const context = { window: {}, setTimeout, clearTimeout, indexedDB: { open() {
+    const request = {}; setImmediate(() => request.onblocked()); return request;
+  } } };
+  await assert.rejects(vm.runInNewContext(OPEN_DATABASE, context), /indexeddb_open_blocked/);
+});
+test('IndexedDB aborted read explicitly rejects instead of waiting for request success', async () => {
+  const transaction = { error: { name: 'AbortError' }, objectStore: () => ({ get: () => ({}) }) };
+  const context = { setTimeout, clearTimeout, window: { smokeDatabase: { transaction() {
+    setImmediate(() => transaction.onabort()); return transaction;
+  } } } };
+  await assert.rejects(vm.runInNewContext(READ_DATABASE, context), /indexeddb_read_AbortError/);
+});
