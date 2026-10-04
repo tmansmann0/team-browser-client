@@ -1,0 +1,12 @@
+{
+  "provenance": "debian-package",
+  "executable": "/usr/lib/chromium/chromium",
+  "engine_id": "chromium",
+  "version": "REPLACE_WITH_EXACT_REVIEWED_DEBIAN_PACKAGE_VERSION",
+  "sha256": "REPLACE_WITH_INDEPENDENTLY_REVIEWED_64_CHARACTER_LOWERCASE_SHA256",
+  "package_versions": {
+    "chromium:amd64": "REPLACE_WITH_EXACT_REVIEWED_DEBIAN_PACKAGE_VERSION",
+    "chromium-common:amd64": "REPLACE_WITH_EXACT_REVIEWED_DEBIAN_PACKAGE_VERSION",
+    "chromium-sandbox:amd64": "REPLACE_WITH_EXACT_REVIEWED_DEBIAN_PACKAGE_VERSION"
+  }
+}

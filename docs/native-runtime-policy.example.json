@@ -1,0 +1,8 @@
+{
+  "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "engine_id": "chromium",
+  "version": "REPLACE_WITH_REVIEWED_INSTALLED_VERSION",
+  "sha256": "REPLACE_WITH_INDEPENDENTLY_REVIEWED_64_CHARACTER_LOWERCASE_SHA256",
+  "signer_identity": "REPLACE_WITH_REVIEWED_TEAM_IDENTIFIER:REPLACE_WITH_REVIEWED_BUNDLE_IDENTIFIER",
+  "require_notarization": true
+}

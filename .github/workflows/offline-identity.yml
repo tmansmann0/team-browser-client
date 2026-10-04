@@ -1,0 +1,28 @@
+name: verify offline identity packages
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  offline-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PYTHONPATH: src
+      TBM_TEST_OFFLINE_IDENTITY: '1'
+      # Installing the Python SDK must not install or run any browser engine.
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-client-verification-linux-py312.lock
+      - run: pip install --only-binary=:all: --require-hashes -r requirements-client-verification-linux-py312.lock
+      - run: pip check
+      - run: python -B -m unittest discover -s tests -p test_dependency_lock.py -v
+      - run: python -B -m unittest discover -s tests -p 'test_client_engine*.py' -v
+      - run: python -B -m unittest discover -s tests -p test_client_identity_probe.py -v
+      - run: python -B -m unittest discover -s tests -p test_independent_engine_identity.py -v
+      - run: python -B -m unittest discover -s tests -p test_independent_engine_compatibility.py -v
+      - run: python -B -m unittest discover -s tests -p test_independent_identity_runtime.py -v

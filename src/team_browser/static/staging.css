@@ -1,0 +1,5 @@
+
+.switcher-item { display:block; width:100%; text-align:left; padding:14px;
+  background:white; border:0; border-radius:8px; cursor:pointer; }
+.switcher-item[aria-selected="true"] { background:#e6efd9; outline:2px solid #647c41; }
+#workspace-mode-button:disabled { opacity:1; cursor:default; }

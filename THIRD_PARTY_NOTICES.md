@@ -1,0 +1,3 @@
+# Third-party notices
+
+Original project code only; no upstream browser source or binaries are bundled. Preserve dependency notices before distribution: FastAPI (MIT), Uvicorn (BSD), Pydantic (MIT), cryptography (Apache-2.0/BSD), PyJWT (MIT), optional Playwright (Apache-2.0), and transitive dependencies. Browser distribution requires a separate exact-release license review. MIT for original client code is proposed pending owner confirmation. The TeamBrowser wordmark uses outlined Noto Sans Bold 2.004 artwork (font Copyright 2015 Google LLC, SIL OFL 1.1); no font software is bundled. See https://openfontlicense.org/ofl-faq/ questions 1.1–1.1.2 and docs/brand-guide.md.

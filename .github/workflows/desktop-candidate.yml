@@ -1,0 +1,49 @@
+name: build desktop candidate (manual, not install acceptance)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apple-silicon-candidate:
+    # A separately authorized manual run consumes macOS runner time.
+    # Never target the user's computer or silently use a self-hosted runner.
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: src
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      TBM_PACKAGE_MODE: unsigned-candidate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: arm64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require native Apple Silicon
+        run: test "$(uname -m)" = arm64
+      - name: Install locked build dependencies on cloud build host
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r desktop/requirements-macos-arm64.lock
+          python -m pip check
+          npm ci --prefix desktop --ignore-scripts --no-audit --no-fund
+      - name: Check sidecar and embedded engine contracts
+        run: |
+          python -m unittest discover -s tests -p test_client_desktop_shell.py -v
+          npm --prefix desktop test
+          ruff check src/team_browser/desktop_sidecar.py src/team_browser/client_cli.py tests/test_client_desktop_shell.py
+      - name: Build bundled Python sidecar
+        run: python -m PyInstaller --clean --noconfirm --distpath desktop/sidecar --workpath build/desktop-sidecar desktop/sidecar.spec
+      - name: Package unsigned candidate only
+        run: npm --prefix desktop run package:mac:candidate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TeamBrowser-mac-arm64-unsigned-candidate-NOT-INSTALL-READY
+          path: |
+            desktop/out/*.zip
+            desktop/out/candidate.json
+          if-no-files-found: error
+          retention-days: 14
