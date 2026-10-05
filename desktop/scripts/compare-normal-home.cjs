@@ -23,8 +23,10 @@ function absenceResult(result) {
   if (result.error || result.signal || ![0, 1].includes(result.status)) throw new Error('SecurityAgent query unavailable');
   return result.status === 1;
 }
-function assertWindowObservation(value, requireVisible = false, baseline = null) {
+function assertWindowObservation(value, requireVisible = false, baseline = null, menuBaseline = null) {
   assert.equal(value?.query_ok, true, 'Window query unavailable');
+  assert.ok(Array.isArray(value.menu_signatures) && value.menu_signatures.length <= 3 && value.menu_signatures.every(s => typeof s === 'string' && /^\d+:\d+:25:(?:34|147|31):24:[a-f0-9]{16}$/.test(s)) && new Set(value.menu_signatures).size === value.menu_signatures.length, 'Menu-bar identity metadata unavailable');
+  if (menuBaseline) assert.ok(value.menu_signatures.length === menuBaseline.length && value.menu_signatures.every(s => menuBaseline.includes(s)), 'New, changed or missing menu-bar surface; stop without interaction');
   assert.ok(Array.isArray(value.chrome_signatures) && value.chrome_signatures.every(s => typeof s === 'string' && /^\d+:-?\d+$/.test(s)), 'Chrome window metadata unavailable');
   if (baseline) assert.ok(value.chrome_signatures.every(s => baseline.includes(s)), 'New system chrome window observed; stop without interaction');
   assert.equal(value.security_ui_present, false, 'Security or authorization UI observed; stop without interaction');
@@ -69,7 +71,7 @@ async function main() {
   }
   const summary = () => save('comparison.json', JSON.stringify(report,null,2)+'\n');
   const redact = text => [root, root && fs.realpathSync(root), process.env.HOME].filter(Boolean).reduce((s,p) => s.split(p).join('[ISOLATED_PATH]'), text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'');
-  let guard, chromeBaseline = null;
+  let guard, chromeBaseline = null, menuBaseline = null;
   function readPhase(phase) {
     const file = path.join(root,'evidence',phase+'.json');
     if (!fs.existsSync(file)) return null;
@@ -142,8 +144,9 @@ async function main() {
       const raw=execFileSync(observer,[],{timeout:3000,encoding:'utf8',maxBuffer:4096});
       const observation = JSON.parse(raw);
       report.last_window_observation = { query_ok: observation.query_ok, security_ui_present: observation.security_ui_present, permission_title_observed: observation.permission_title_observed, unexpected_window: observation.unexpected_window, app_windows: observation.app_windows };
-      assertWindowObservation(observation,requireVisible,chromeBaseline);
+      assertWindowObservation(observation,requireVisible,chromeBaseline,menuBaseline);
       chromeBaseline ||= observation.chrome_signatures;
+      menuBaseline ||= observation.menu_signatures;
     };
     guard();report.initial_permission_observation='absent';
     execFileSync('/usr/bin/ditto',['-x','-k',archive,path.join(root,'extracted')],{timeout:60000,stdio:'pipe'});

@@ -15,7 +15,7 @@ test('normal process HOME preserves only bounded launch environment',()=>{
 for(const value of [undefined,'','relative',null]) test(`HOME rejects ${String(value)}`,()=>assert.throws(()=>normalEnvironment(value)));
 test('only successful explicit absence permits starting',()=>{assert.equal(absenceResult({status:1}),true);assert.equal(absenceResult({status:0}),false);});
 for(const result of [{status:null},{status:2},{status:1,error:new Error('blocked')},{status:1,signal:'SIGTERM'}]) test(`unavailable process query fails closed ${JSON.stringify(result)}`,()=>assert.throws(()=>absenceResult(result)));
-const clean={query_ok:true,security_ui_present:false,permission_title_observed:false,unexpected_window:false,app_windows:1,chrome_signatures:['1:24']};
+const clean={query_ok:true,security_ui_present:false,permission_title_observed:false,unexpected_window:false,app_windows:1,chrome_signatures:['1:24'],menu_signatures:[]};
 test('normal single app window observed',()=>assertWindowObservation(clean));
 for(const change of [{query_ok:false},{unexpected_window:true},{security_ui_present:true},{permission_title_observed:true},{app_windows:2},{app_windows:-1},{app_windows:null},{app_windows:1.5}]) test(`window guard rejects ${JSON.stringify(change)}`,()=>assert.throws(()=>assertWindowObservation({...clean,...change})));
 const result={code:0,signal:null,sidecar_process_gone:true};
@@ -59,3 +59,13 @@ test('only bounded evidence is uploaded for one day, no candidate or HOME upload
 test('after render an unobservable app is a stop',()=>assert.throws(()=>assertWindowObservation({...clean,app_windows:0},true)));
 
 test('new or unavailable system chrome is a stop',()=>{assert.throws(()=>assertWindowObservation(clean,false,[]));assert.throws(()=>assertWindowObservation({...clean,chrome_signatures:null}));assertWindowObservation(clean,false,['1:24']);});
+
+const menuKey='100:200:25:34:24:abcdef1234567890';
+test('menu baseline permits only the exact frozen surfaces',()=>{
+ const menus={...clean,menu_signatures:[menuKey]};
+ assertWindowObservation(menus,false,['1:24'],[menuKey]);
+ for(const keys of [[],[menuKey.replace('100:','101:')],[menuKey.replace(':200:',':201:')],[menuKey.replace(':34:',':147:')],[menuKey.replace('abcdef','fedcba')]]) assert.throws(()=>assertWindowObservation({...menus,menu_signatures:keys},false,['1:24'],[menuKey]));
+});
+test('missing, duplicated or excessive menu metadata stops',()=>{
+ for(const keys of [null,[menuKey,menuKey],[menuKey,'101:200:25:34:24:abcdef1234567890','102:200:25:34:24:abcdef1234567890','103:200:25:34:24:abcdef1234567890']]) assert.throws(()=>assertWindowObservation({...clean,menu_signatures:keys}));
+});

@@ -17,6 +17,10 @@ const header = String.raw`
 #define TEST_CF_STUB_H
 #include <stddef.h>
 typedef long CFIndex;
+typedef unsigned short UniChar;
+typedef struct { double width, height; } CGSize;
+typedef struct { double x, y; } CGPoint;
+typedef struct { CGPoint origin; CGSize size; } CGRect;
 typedef unsigned long CFTypeID;
 typedef struct TestObject TestObject;
 typedef const TestObject *CFTypeRef;
@@ -33,12 +37,17 @@ enum { kCFStringEncodingUTF8 = 1, kCFCompareCaseInsensitive = 1,
 #define kCGWindowName "title"
 #define kCGWindowLayer "layer"
 #define kCGWindowNumber "number"
+#define kCGWindowBounds "bounds"
+#define kCGWindowOwnerPID "pid"
 #define CFSTR(value) test_string(value)
 CFStringRef test_string(const char *value);
 CFTypeID CFGetTypeID(CFTypeRef value);
 CFTypeID CFStringGetTypeID(void);
 CFTypeID CFNumberGetTypeID(void);
 CFTypeID CFDictionaryGetTypeID(void);
+CFTypeID CFArrayGetTypeID(void);
+UniChar CFStringGetCharacterAtIndex(CFStringRef value, CFIndex index);
+int CGRectMakeWithDictionaryRepresentation(CFDictionaryRef value, CGRect *rectangle);
 CFStringRef CFStringCreateWithCString(const void *allocator, const char *text, int encoding);
 CFRange CFStringFind(CFStringRef value, CFStringRef term, int flags);
 int CFStringCompare(CFStringRef left, CFStringRef right, int flags);
@@ -62,7 +71,8 @@ enum { STRING = 1, NUMBER, DICTIONARY, ARRAY };
 struct TestObject {
   int type, number, convertible;
   const char *text;
-  CFTypeRef owner, title, layer, identifier;
+  CFTypeRef owner, title, layer, identifier, bounds, pid;
+  double width, height;
   CFTypeRef *items;
   CFIndex count;
 };
@@ -80,9 +90,12 @@ static TestObject *row(const char *owner, const char *title, int layer, int iden
   TestObject *result = object(DICTIONARY);
   result->owner = owner ? test_string(owner) : NULL;
   result->title = title ? test_string(title) : NULL;
+  TestObject *bounds = object(DICTIONARY); bounds->width = 1024; bounds->height = 768; bounds->convertible = 1;
+  result->bounds = bounds; result->pid = number(200);
   result->layer = number(layer); result->identifier = number(identifier); return result;
 }
 CFTypeID CFGetTypeID(CFTypeRef value) { assert(value); return (CFTypeID)value->type; }
+CFTypeID CFArrayGetTypeID(void) { return ARRAY; }
 CFTypeID CFStringGetTypeID(void) { return STRING; }
 CFTypeID CFNumberGetTypeID(void) { return NUMBER; }
 CFTypeID CFDictionaryGetTypeID(void) { return DICTIONARY; }
@@ -107,6 +120,15 @@ int CFStringCompare(CFStringRef left, CFStringRef right, int flags) {
 CFIndex CFStringGetLength(CFStringRef value) {
   assert(value && value->type == STRING); return (CFIndex)strlen(value->text);
 }
+UniChar CFStringGetCharacterAtIndex(CFStringRef value, CFIndex index) {
+  assert(value && value->type == STRING && index >= 0 && index < CFStringGetLength(value));
+  return (unsigned char)value->text[index];
+}
+int CGRectMakeWithDictionaryRepresentation(CFDictionaryRef value, CGRect *rectangle) {
+  assert(value && value->type == DICTIONARY);
+  if (!value->convertible) return 0;
+  rectangle->origin = (CGPoint){0,0}; rectangle->size = (CGSize){value->width,value->height}; return 1;
+}
 void CFRelease(CFTypeRef value) { (void)value; }
 CFIndex CFArrayGetCount(CFArrayRef value) { assert(value && value->type == ARRAY); return value->count; }
 const void *CFArrayGetValueAtIndex(CFArrayRef value, CFIndex index) {
@@ -118,6 +140,8 @@ const void *CFDictionaryGetValue(CFDictionaryRef value, const void *key) {
   if (!strcmp(key, kCGWindowName)) return value->title;
   if (!strcmp(key, kCGWindowLayer)) return value->layer;
   if (!strcmp(key, kCGWindowNumber)) return value->identifier;
+  if (!strcmp(key, kCGWindowBounds)) return value->bounds;
+  if (!strcmp(key, kCGWindowOwnerPID)) return value->pid;
   assert(0); return NULL;
 }
 int CFNumberGetValue(CFNumberRef value, int type, void *out) {
@@ -171,6 +195,29 @@ CFArrayRef CGWindowListCopyWindowInfo(int options, int relative) {
   else if (!strncmp(scenario, "chrome_layer_zero:", 18)) first->owner = test_string(scenario+18);
   else if (!strncmp(scenario, "security_owner:", 15)) { first->owner = test_string(scenario+15); first->layer = number(8); }
   else if (!strncmp(scenario, "permission_title:", 17)) first->title = test_string(scenario+17);
+  else if (!strncmp(scenario, "menu_", 5)) {
+    first->owner=test_string("Control Center");first->title=test_string("Menu Item");first->layer=number(25);
+    ((TestObject *)first->bounds)->width=34;((TestObject *)first->bounds)->height=24;
+    if(!strcmp(scenario,"menu_control34")) {}
+    else if(!strcmp(scenario,"menu_control147")) ((TestObject *)first->bounds)->width=147;
+    else if(!strcmp(scenario,"menu_spotlight31")) {first->owner=test_string("Spotlight");((TestObject *)first->bounds)->width=31;}
+    else if(!strcmp(scenario,"menu_wrong_width")) ((TestObject *)first->bounds)->width=35;
+    else if(!strcmp(scenario,"menu_wrong_height")) ((TestObject *)first->bounds)->height=25;
+    else if(!strcmp(scenario,"menu_wrong_layer")) first->layer=number(0);
+    else if(!strcmp(scenario,"menu_missing_bounds")) first->bounds=NULL;
+    else if(!strcmp(scenario,"menu_bad_bounds")) first->bounds=test_string("bounds");
+    else if(!strcmp(scenario,"menu_missing_title")) first->title=NULL;
+    else if(!strcmp(scenario,"menu_permission_title")) first->title=test_string("Keychain permission");
+    else if(!strcmp(scenario,"menu_missing_pid")) first->pid=NULL;
+    else if(!strcmp(scenario,"menu_bad_pid")) first->pid=number(1);
+    else if(!strcmp(scenario,"menu_missing_id")) first->identifier=NULL;
+    else if(!strcmp(scenario,"menu_long_title")) {char *text=calloc(1026,1);memset(text,'A',1025);first->title=test_string(text);}
+    else if(!strcmp(scenario,"menu_four")) {
+      result->count=4;
+      for(int i=1;i<4;i++) {TestObject *item=row("Control Center","Menu Item",25,100+i);((TestObject*)item->bounds)->width=34;((TestObject*)item->bounds)->height=24;result->items[i]=item;}
+    }
+    else assert(0);
+  }
   else assert(!strcmp(scenario, "normal_app"));
   return result;
 }
@@ -274,3 +321,8 @@ for (const title of ['KEYCHAIN', 'Permission', 'Enter password', 'App would like
     assert.throws(() => assertWindowObservation(value));
   });
 }
+
+for(const name of ['menu_control34','menu_control147','menu_spotlight31']) test(`compiled C accepts only observed menu shape ${name}`,()=>{
+ const value=run(name);assert.equal(value.menu_signatures.length,1);assertWindowObservation(value,false,[],value.menu_signatures);
+});
+for(const name of ['menu_wrong_width','menu_wrong_height','menu_wrong_layer','menu_missing_bounds','menu_bad_bounds','menu_missing_title','menu_permission_title','menu_missing_pid','menu_bad_pid','menu_missing_id','menu_long_title','menu_four']) test(`compiled C fails closed on altered menu ${name}`,()=>assert.throws(()=>assertWindowObservation(run(name))));

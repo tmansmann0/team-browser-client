@@ -11,3 +11,9 @@ There is at most one seed and one reopen. Reopen is gated on the seed's successf
 The artifact contains at most one MiB of fixed synthetic diagnostic reports, bounded process logs and selected fixture images, retained for one day. It excludes HOME contents, profile databases, Keychain data, binaries and the full candidate archive. The observer's native CoreGraphics helper only classifies window metadata and never requests accessibility/screen-recording permission or controls a window.
 
 A passing comparison establishes only the packaged synthetic cookie/localStorage/IndexedDB isolation and restart checks actually reported. Real website sign-in, anti-detect qualification, proxies/leaks, service workers/cache, installation, Developer ID/notarization and Gatekeeper remain separate gates. native_acceptance and install_ready stay false. Node tests are helper contracts, not native evidence.
+
+## Runner menu-bar classification
+
+Read-only run 37321772107 recorded Control Center menu-bar surfaces at layer 25 measuring 34×24 and 147×24, and a Spotlight surface at layer 25 measuring 31×24. These triggered the earlier unknown-owner rule before any candidate launch (run 37320168856, launches=0). SecurityAgent was absent and no permission-like title was observed. The snapshot supports a menu-bar false positive, but cannot identify the exact window from the earlier, separate runner.
+
+The revised observer recognizes only those exact owner/layer/dimension combinations when present before launch, requiring valid window ID and owner PID plus a nonempty bounded title. It freezes window identity, dimensions and a comparison fingerprint of the title. New, removed, changed, duplicated or excessive menu surfaces stop the run; all permission-title and SecurityAgent checks still apply. It does not allow general Control Center/Spotlight windows, hide or dismiss anything, or alter macOS security.

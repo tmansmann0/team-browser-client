@@ -40,6 +40,7 @@ enum { kCFStringEncodingUTF8 = 1, kCFCompareCaseInsensitive = 1,
 #define kCGWindowLayer "layer"
 #define kCGWindowNumber "number"
 #define kCGWindowBounds "bounds"
+#define kCGWindowOwnerPID "pid"
 #define CFSTR(value) test_string(value)
 CFStringRef test_string(const char *value);
 CFTypeID CFGetTypeID(CFTypeRef value);
@@ -144,6 +145,7 @@ const void *CFDictionaryGetValue(CFDictionaryRef value, const void *key) {
   if (!strcmp(key, kCGWindowName)) return value->title;
   if (!strcmp(key, kCGWindowLayer)) return value->layer;
   if (!strcmp(key, kCGWindowBounds)) return value->bounds;
+  if (!strcmp(key, kCGWindowOwnerPID)) return number(200);
   if (!strcmp(key, kCGWindowNumber)) return value->identifier;
   assert(0); return NULL;
 }
@@ -439,4 +441,24 @@ test('exactly 32 rows are not falsely marked truncated', () => {
   assert.equal(value.total, 32);
   assert.equal(value.rows.length, 32);
   assert.equal(value.truncated, false);
+});
+
+test('missing, empty, and nonempty titles stay distinct without exposing their text', () => {
+  assert.equal(first('missing_title').title_available, false);
+  assert.equal(first('empty_title').title_available, true);
+  assert.equal(first('empty_title').title_nonempty, false);
+  const raw = runRaw('permission_title:ordinary-private-title-sentinel');
+  const row = JSON.parse(raw).rows[0];
+  assert.equal(row.title_available, true);
+  assert.equal(row.title_nonempty, true);
+  assert.equal(row.permission_like_title, false);
+  assert.ok(!raw.includes('ordinary-private-title-sentinel'));
+});
+test('native helper contains only read-only CF/CG APIs and stdout reporting', () => {
+  const text = fs.readFileSync(source, 'utf8');
+  const nativeCalls = [...text.matchAll(/\b((?:CG|AX|Sec|LS|NS)[A-Za-z0-9_]+)\s*\(/g)].map(match => match[1]);
+  assert.deepEqual([...new Set(nativeCalls)].sort(), ['CGRectMakeWithDictionaryRepresentation', 'CGWindowListCopyWindowInfo']);
+  assert.equal(nativeCalls.filter(name => name === 'CGWindowListCopyWindowInfo').length, 1);
+  assert.doesNotMatch(text, /\b(?:system|popen|fork|exec\w*|posix_spawn\w*|fopen|open|unlink|remove|rename|chmod|setenv|getenv)\s*\(/);
+  assert.doesNotMatch(text, /CGRequest|CGPreflight|CGWindowListCreateImage|CGDisplayCreateImage|AXUIElement|SecItem/);
 });
