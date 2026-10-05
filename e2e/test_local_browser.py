@@ -6,6 +6,7 @@ FFmpeg for video capture. CI uses the Ubuntu runner's existing Chrome install.
 Only generated local workspace data is used; external navigation is blocked.
 """
 
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -103,12 +104,38 @@ class LocalBrowserTests(unittest.TestCase):
 
     def tearDown(self):
         try:
+            if getattr(self, "shortcut_diagnostics", False):
+                self.write_shortcut_diagnostics()
             self.page.screenshot(
                 path=str(self.artifacts / (self._testMethodName + ".png")), full_page=True
             )
         finally:
             self.context.close()
         self.assertEqual(self.errors, [])
+
+    def write_shortcut_diagnostics(self):
+        try:
+            evidence = self.page.evaluate("""() => {
+                window.__tbmShortcutDiagnostics.record('teardown');
+                return window.__tbmShortcutDiagnostics.read();
+            }""")
+            encoded = json.dumps(evidence, separators=(",", ":"))
+            # Retain the latest key/focus evidence if the byte bound is reached.
+            events = evidence.get("events") if isinstance(evidence, dict) else None
+            while isinstance(events, list) and events and len(encoded.encode("utf-8")) >= 65536:
+                events.pop(0)
+                evidence["sizeTruncated"] = True
+                encoded = json.dumps(evidence, separators=(",", ":"))
+            if len(encoded.encode("utf-8")) >= 65536:
+                encoded = '{"diagnostic_error":"size_limit"}'
+        except Exception as error:
+            # Diagnostic capture must not mask the original test failure or
+            # expose arbitrary browser exceptions, page text, or token values.
+            encoded = json.dumps({"diagnostic_error": type(error).__name__})
+        try:
+            (self.artifacts / "tablet-shortcut-diagnostics.json").write_text(encoded + "\n")
+        except OSError as error:
+            print("Shortcut diagnostic write failed:", type(error).__name__)
 
     def create_profile(self, name):
         self.page.locator("#new-profile").click()
@@ -139,6 +166,8 @@ class LocalBrowserTests(unittest.TestCase):
 
     def test_tablet_resource_navigation_and_switcher(self):
         self.page.set_viewport_size({"width": 768, "height": 1024})
+        self.page.evaluate(Path(__file__).with_name("shortcut_diagnostics.js").read_text())
+        self.shortcut_diagnostics = True
         self.create_profile("Synthetic Tablet")
         self.page.locator("#detail-dialog").wait_for(state="hidden")
         # Saving restores focus to profile search after the opener is rendered
