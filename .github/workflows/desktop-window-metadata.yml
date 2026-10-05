@@ -1,0 +1,49 @@
+name: inspect disposable runner windows (manual, read-only)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  read-only-window-metadata:
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require native Apple Silicon
+        run: test "$(uname -m)" = arm64
+      - name: Verify read-only metadata contracts
+        run: node --test desktop/tests/runner-window-metadata.test.cjs
+      - name: Compile read-only window metadata observer
+        run: /usr/bin/clang desktop/scripts/inspect-runner-windows.c -framework CoreGraphics -framework CoreFoundation -o "$RUNNER_TEMP/tbm-inspect-runner-windows"
+      - name: Record one bounded window metadata snapshot without launching TeamBrowser
+        run: |
+          mkdir -p desktop/out/runner-window-metadata
+          node - <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const {execFileSync, spawnSync} = require('node:child_process');
+          const file = 'desktop/out/runner-window-metadata/metadata.json';
+          const report = {kind:'read-only-disposable-runner-window-metadata', observer_commit:process.env.GITHUB_SHA, app_launches:0, keychain_api_calls:0, native_acceptance:false, install_ready:false};
+          try {
+            const query = spawnSync('/usr/bin/pgrep',['-x','SecurityAgent'],{timeout:3000,stdio:'ignore'});
+            report.security_agent = query.error || query.signal || ![0,1].includes(query.status) ? 'unavailable' : query.status === 0 ? 'present' : 'absent';
+            const data = execFileSync(path.join(process.env.RUNNER_TEMP,'tbm-inspect-runner-windows'),[],{timeout:5000,encoding:'utf8',maxBuffer:16384});
+            report.windows = JSON.parse(data);
+            report.status = 'collected';
+          } catch(error) {report.status='failed';report.failure=String(error.code || 'window_metadata_query_failed');process.exitCode=1;}
+          const output=JSON.stringify(report,null,2)+'\n';
+          if(Buffer.byteLength(output)>32768) throw new Error('Metadata limit exceeded');
+          fs.writeFileSync(file,output);console.log(output);
+          NODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TeamBrowser-runner-window-metadata-${{ github.sha }}-READ-ONLY
+          path: desktop/out/runner-window-metadata/metadata.json
+          if-no-files-found: error
+          retention-days: 1
