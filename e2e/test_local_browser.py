@@ -140,8 +140,17 @@ class LocalBrowserTests(unittest.TestCase):
     def test_tablet_resource_navigation_and_switcher(self):
         self.page.set_viewport_size({"width": 768, "height": 1024})
         self.create_profile("Synthetic Tablet")
-        self.page.keyboard.press("Alt+3")
+        self.page.locator("#detail-dialog").wait_for(state="hidden")
+        # Saving restores focus to profile search after the opener is rendered
+        # again. Navigation shortcuts deliberately do not run in editing fields.
+        profile_url = self.page.url
+        self.page.locator("#local-search").press("Alt+3")
+        self.assertEqual(self.page.url, profile_url)
+        self.assertFalse(self.page.locator("#resource-form").is_visible())
+        # Target a non-editable control without clicking or opening its dialog.
+        self.page.locator("#quick-switch-button").press("Alt+3")
         self.page.locator("#resource-form").wait_for(state="visible")
+        self.assertEqual(urlsplit(self.page.url).fragment, "resources")
         self.page.keyboard.press("Control+k")
         self.page.locator("#switcher-search").fill("Synthetic Tablet")
         self.page.keyboard.press("Escape")

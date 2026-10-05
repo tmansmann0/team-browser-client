@@ -229,6 +229,21 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
     t.app.globalKeydown({key: '3', altKey: true, target: {tagName: 'BODY'}, preventDefault() {}}); assert.equal(t.location.hash, '#resources');
     t.app.openSwitcher(); t.app.switcherKeydown({key: '1', altKey: true, preventDefault() {}}); await new Promise(resolve => setTimeout(resolve, 0)); assert.equal(t.app.model.selectedId, 'local_one');
   });
+  await test('After profile creation, editing focus guards Alt navigation until a control is focused', async () => {
+    const t = scenario({savedMode: 'local'}); await t.app.bootstrap();
+    t.element('new-profile').focus(); await t.element('new-profile').dispatch('click');
+    t.element('profile-name-input').value = 'Tablet shortcut fixture';
+    await t.element('local-profile-form').dispatch('submit');
+    assert(!t.element('detail-dialog').open);
+    assert.equal(t.document.activeElement.key, 'local-search');
+    t.app.globalKeydown({key: '3', altKey: true, target: t.document.activeElement, preventDefault() { throw new Error('Editing focus must keep navigation shortcuts inactive'); }});
+    assert.equal(t.location.hash, '#profiles');
+    t.element('quick-switch-button').focus();
+    let prevented = false;
+    t.app.globalKeydown({key: '3', altKey: true, target: t.document.activeElement, preventDefault() { prevented = true; }});
+    assert(prevented); assert.equal(t.location.hash, '#resources');
+    t.app.render(); assert(t.element('view-container').innerHTML.includes('id="resource-form"'));
+  });
   await test('Inbox defaults to unknown unread, has distinct marked synthetic counts, no global opening', async () => {
     const t = scenario({savedMode: 'local'}); await t.app.bootstrap(); t.location.hash = '#inbox'; t.app.render(); let content = t.element('view-container').innerHTML; assert(content.includes('Unread count unavailable')); assert(!content.includes('synthetic unread threads')); assert(content.includes('UNREAD DATA NOT CONNECTED')); assert(content.includes('Open Gmail')); assert(content.includes('disabled title="Requires a verified native browser'));
     t.element('inbox-examples').checked = true; await t.element('inbox-examples').dispatch('change'); content = t.element('view-container').innerHTML; assert(content.includes('3 synthetic unread threads')); assert(content.includes('10 synthetic unread threads')); assert(content.includes('SYNTHETIC EXAMPLE · NOT LIVE')); assert(!source.includes('window.open('));
