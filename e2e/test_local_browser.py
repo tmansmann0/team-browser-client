@@ -140,10 +140,22 @@ class LocalBrowserTests(unittest.TestCase):
     def create_profile(self, name):
         self.page.locator("#new-profile").click()
         self.page.get_by_label("Profile name", exact=True).fill(name)
+        # close() hides a dialog before its queued close event restores focus.
+        # Register after the app's handlers and wait for that event to finish.
+        self.page.locator("#detail-dialog").evaluate("""dialog => {
+            dialog.__tbmCreateCloseComplete = false;
+            dialog.addEventListener('close', () => {
+                dialog.__tbmCreateCloseComplete = true;
+            }, {once: true});
+        }""")
         self.page.locator("#save-local-profile").click()
         self.page.locator(".profile-rail-item").filter(
             has=self.page.get_by_text(name, exact=True)
         ).wait_for()
+        self.page.wait_for_function(
+            "() => document.getElementById('detail-dialog').__tbmCreateCloseComplete === true",
+            timeout=5000,
+        )
 
     def test_create_cancel_refresh_and_keyboard_switch(self):
         self.create_profile("Synthetic Alpha")
