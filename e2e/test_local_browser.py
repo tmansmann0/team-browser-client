@@ -1,7 +1,8 @@
 """Actual rendered browser tests for CI/a permitted local runtime.
 
 These do not run during ordinary unit discovery. They are intentionally gated
-and require the official Playwright Chromium installation with sandbox enabled.
+and require an installed official Chrome with sandbox enabled plus Playwright's
+FFmpeg for video capture. CI uses the Ubuntu runner's existing Chrome install.
 Only generated local workspace data is used; external navigation is blocked.
 """
 
@@ -62,7 +63,7 @@ class LocalBrowserTests(unittest.TestCase):
         # Never relax the sandbox to make this test pass. An unavailable sandbox
         # is a runtime blocker, not permission to change OS/browser security.
         cls.browser = cls.playwright.chromium.launch(
-            headless=True, channel="chromium", chromium_sandbox=True
+            headless=True, channel="chrome", chromium_sandbox=True
         )
         cls.addClassCleanup(cls.browser.close)
         cls.artifacts = cls.root / "artifacts/browser"

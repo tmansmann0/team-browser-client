@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   browser:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -12,7 +12,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e '.[dev]' playwright==1.62.0
-      - run: python -m playwright install --with-deps chromium
+      # The runner's official Chrome uses Ubuntu's existing AppArmor profile.
+      # Keep the browser sandbox enabled; do not alter host security settings.
+      - run: google-chrome --version
+      - run: python -m playwright install ffmpeg
       - run: python -m unittest discover -s e2e -p 'test_*.py' -v
         env:
           TBM_RUN_BROWSER_TESTS: '1'

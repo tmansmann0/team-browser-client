@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from team_browser.client import session_vault as vault
+from team_browser.client import auth_flow, session_vault as vault
 from team_browser.client.auth_flow import (
     AccountIdentity,
     AuthStatus,
@@ -57,6 +57,14 @@ class IndependentSessionVaultTests(unittest.TestCase):
                 vault,
                 "time",
                 SimpleNamespace(time=lambda: self.wall, monotonic=lambda: self.monotonic),
+            ),
+            # The core and vault must share the fixture clock. Otherwise RSA
+            # generation crossing a real second makes the core's 600-second
+            # expiry exceed the frozen vault's strict 600-second TTL limit.
+            patch.object(
+                auth_flow,
+                "time",
+                SimpleNamespace(time=lambda: self.wall),
             ),
         ]
         for item in self.patches:
@@ -255,32 +263,56 @@ class IndependentSessionVaultTests(unittest.TestCase):
                 ours.close()
             instance.close()
 
-    def test_entra_real_core_and_native_vault_contract_commit_identity_only(self):
+    def assert_entra_identity_only(self, exchange_seconds=0):
         from test_client_provider_signin import CONFIG as OIDC, SyntheticTransport
 
         instance = self.open(oidc_configuration=OIDC)
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        transport = SyntheticTransport(key, OIDC, int(self.wall))
-        core = ManagedSignIn(OIDC, transport=transport, vault=instance)
-        request = core.begin()
-        self.assertEqual(request.result.status, AuthStatus.WAITING)
-        params = parse_qs(urlsplit(request.authorization_url).query)
-        transport.nonce = params["nonce"][0]
-        result = core.complete_callback(
-            OIDC.redirect_uri
-            + "?"
-            + urlencode({"state": params["state"][0], "code": "independent-synthetic-code"})
-        )
-        self.assertEqual(result.status, AuthStatus.IDENTITY_VERIFIED)
-        payload = json.loads(self.store.items[vault._PAYLOAD.account_id])
-        self.assertEqual(tuple(payload["scopes"]), OIDC.scopes)
-        self.assertEqual(payload["issuer"], OIDC.issuer)
-        self.assertIsNone(instance.assert_session_current(payload["session_id"]))
-        public = json.dumps(result.public())
-        self.assertNotIn(payload["access_token"], public)
-        self.assertNotIn(payload["id_token"], public)
-        self.assertFalse(result.public()["managed_access_available"])
-        self.assertFalse(result.public()["company_membership_verified"])
+        try:
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            transport = SyntheticTransport(key, OIDC, int(self.wall))
+
+            def advance_exchange_clock():
+                self.wall += exchange_seconds
+                self.monotonic += exchange_seconds
+
+            transport.on_post = advance_exchange_clock
+            core = ManagedSignIn(
+                OIDC, transport=transport, vault=instance, monotonic=lambda: self.monotonic
+            )
+            request = core.begin()
+            self.assertEqual(request.result.status, AuthStatus.WAITING)
+            params = parse_qs(urlsplit(request.authorization_url).query)
+            transport.nonce = params["nonce"][0]
+            result = core.complete_callback(
+                OIDC.redirect_uri
+                + "?"
+                + urlencode({"state": params["state"][0], "code": "independent-synthetic-code"})
+            )
+            self.assertEqual(result.status, AuthStatus.IDENTITY_VERIFIED)
+            payload = json.loads(self.store.items[vault._PAYLOAD.account_id])
+            self.assertEqual(tuple(payload["scopes"]), OIDC.scopes)
+            self.assertEqual(payload["issuer"], OIDC.issuer)
+            self.assertGreater(payload["expires_at"] - self.wall, 0)
+            self.assertLessEqual(payload["expires_at"] - self.wall, OIDC.local_session_ttl_seconds)
+            self.assertIsNone(instance.assert_session_current(payload["session_id"]))
+            public = json.dumps(result.public())
+            self.assertNotIn(payload["access_token"], public)
+            self.assertNotIn(payload["id_token"], public)
+            self.assertFalse(result.public()["managed_access_available"])
+            self.assertFalse(result.public()["company_membership_verified"])
+        finally:
+            instance.close()
+
+    def test_entra_real_core_and_native_vault_contract_commit_identity_only(self):
+        self.assert_entra_identity_only()
+
+    def test_entra_commit_keeps_strict_ttl_across_fixture_clock_boundaries(self):
+        for fractional_second, exchange_seconds in ((0.0, 0.0), (0.99, 0.02), (0.25, 2.0)):
+            with self.subTest(fraction=fractional_second, exchange_seconds=exchange_seconds):
+                # Real time is already two seconds beyond the frozen fixture,
+                # deterministically reproducing the original clock mismatch.
+                self.wall = int(time.time()) - 2 + fractional_second
+                self.assert_entra_identity_only(exchange_seconds)
 
     def test_native_entra_rejects_contradictory_or_missing_tenant_version_claims(self):
         import jwt
