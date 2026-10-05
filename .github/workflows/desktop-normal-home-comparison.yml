@@ -1,0 +1,38 @@
+name: compare fixed candidate normal HOME (manual, bounded)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  normal-home-comparison:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Require native Apple Silicon
+        run: test "$(uname -m)" = arm64
+      - uses: actions/download-artifact@v4
+        with:
+          artifact-ids: '11310884356'
+          run-id: '37224078859'
+          repository: tmansmann0/team-browser-client
+          github-token: ${{ github.token }}
+          merge-multiple: true
+          path: desktop/diagnostic-input
+      - name: Validate observer contracts
+        run: node --test desktop/tests/normal-home-comparison.test.cjs desktop/tests/permission-window-observer.test.cjs
+      - name: Compare unchanged candidate using existing disposable runner HOME
+        run: node desktop/scripts/compare-normal-home.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: TeamBrowser-normal-HOME-62d56b3-${{ github.sha }}-NOT-ACCEPTANCE
+          path: desktop/out/normal-home-comparison/
+          if-no-files-found: error
+          retention-days: 1
